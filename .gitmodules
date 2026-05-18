@@ -1,0 +1,6 @@
+[submodule "submodules/sn-nvs"]
+	path = submodules/sn-nvs
+	url = https://github.com/SoccerNet/sn-nvs
+[submodule "submodules/GaussianPro"]
+	path = submodules/GaussianPro
+	url = https://github.com/kcheng1021/GaussianPro.git

@@ -1,0 +1,89 @@
+diff --git a/arguments/__init__.py b/arguments/__init__.py
+index c1ba605..656f8d3 100644
+--- a/arguments/__init__.py
++++ b/arguments/__init__.py
+@@ -111,6 +111,7 @@ class OptimizationParams(ParamGroup):
+         self.propagated_iteration_after = 12000
+         self.patch_size = 20
+         self.pair_path = ''
++        self.num_neighbors = 4
+         super().__init__(parser, "Optimization Parameters")
+ 
+ def get_combined_args(parser : ArgumentParser):
+diff --git a/scene/dataset_readers.py b/scene/dataset_readers.py
+index 94d727f..8ddbf8d 100644
+--- a/scene/dataset_readers.py
++++ b/scene/dataset_readers.py
+@@ -92,11 +92,14 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, sky_seg=Fal
+             focal_length_x = intr.params[0]
+             FovY = focal2fov(focal_length_x, height)
+             FovX = focal2fov(focal_length_x, width)
++            # Convert to PINHOLE format [fx, fy, cx, cy] for K matrix
++            K_params = np.array([intr.params[0], intr.params[0], intr.params[1], intr.params[2]])
+         elif intr.model=="PINHOLE":
+             focal_length_x = intr.params[0]
+             focal_length_y = intr.params[1]
+             FovY = focal2fov(focal_length_y, height)
+             FovX = focal2fov(focal_length_x, width)
++            K_params = intr.params
+         else:
+             assert False, "Colmap camera model not handled: only undistorted datasets (PINHOLE or SIMPLE_PINHOLE cameras) supported!"
+ 
+@@ -128,7 +131,7 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, sky_seg=Fal
+ 
+         cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
+                               image_path=image_path, image_name=image_name, width=width, height=height, 
+-                              K=intr.params, sky_mask=sky_mask, normal=normal, depth=depth)
++                              K=K_params, sky_mask=sky_mask, normal=normal, depth=depth)
+         cam_infos.append(cam_info)
+     sys.stdout.write('\n')
+     return cam_infos
+diff --git a/train.py b/train.py
+index 3618aa5..a3d63c1 100644
+--- a/train.py
++++ b/train.py
+@@ -60,7 +60,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
+     ema_loss_for_log = 0.0
+     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
+     first_iter += 1
+-    # depth_loss_fn = ScaleAndShiftInvariantLoss(alpha=0.1, scales=1)
+     propagated_iteration_begin = opt.propagated_iteration_begin
+     propagated_iteration_after = opt.propagated_iteration_after
+     after_propagated = False
+@@ -68,6 +67,17 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
+     for i in range(0, len(viewpoint_stack), 1):
+         propagation_dict[viewpoint_stack[i].image_name] = False
+ 
++    # Build spatial KNN neighbor map (replaces index-based intervals)
++    num_neighbors = getattr(opt, 'num_neighbors', 4)
++    if opt.depth_loss:
++        import numpy as _np
++        from scipy.spatial import KDTree as _KDTree
++        _centers = _np.array([cam.camera_center.cpu().numpy() for cam in viewpoint_stack])
++        _tree = _KDTree(_centers)
++        _, _nn_idxs = _tree.query(_centers, k=num_neighbors + 1)
++        spatial_neighbor_map = {i: _nn_idxs[i, 1:].tolist() for i in range(len(viewpoint_stack))}
++        print(f"[GaussianPro] Spatial KNN neighbor map built: K={num_neighbors}")
++
+     for iteration in range(first_iter, opt.iterations + 1):        
+         if network_gui.conn == None:
+             network_gui.try_connect()
+@@ -101,17 +111,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
+         viewpoint_cam = viewpoint_stack[randidx]
+         
+         if opt.depth_loss:
+-            if opt.dataset == '360':
+-                src_idxs = pairs[randidx]
+-            else:
+-                # intervals = [-6, -3, 3, 6]
+-                if opt.dataset == 'waymo':
+-                    intervals = [-2, -1, 1, 2]
+-                elif opt.dataset == 'scannet':
+-                    intervals = [-10, -5, 5, 10]
+-                elif opt.dataset == 'free':
+-                    intervals = [-2, -1, 1, 2]
+-                src_idxs = [randidx+itv for itv in intervals if ((itv + randidx > 0) and (itv + randidx < len(viewpoint_stack)))]
++            src_idxs = spatial_neighbor_map[randidx]
+ 
+         #propagate the gaussians first
+         with torch.no_grad():

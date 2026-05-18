@@ -1,0 +1,18 @@
+# Build / cache
+__pycache__/
+*.pyc
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# Outputs / models
+output/
+*.pth
+*.ply
+*.zip
+
+# Local data
+data/
